@@ -1,0 +1,90 @@
+<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>RutaYa – Taxi RD</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<style>
+:root{--bg:#f3f3f1;--card:#fff;--tx:#111;--mu:#666;--ac:#111;--at:#fff;--ln:#ddd}
+@media(prefers-color-scheme:dark){:root{--bg:#111;--card:#1e1e1e;--tx:#f2f2f2;--mu:#9a9a9a;--ac:#fff;--at:#111;--ln:#333}}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,-apple-system,sans-serif}
+#app{max-width:480px;margin:0 auto;height:100%;display:flex;flex-direction:column}
+.auth{padding:32px 24px;display:flex;flex-direction:column;gap:12px;margin-top:10vh}
+h1{font-size:34px;margin:0}h2{margin:0 0 4px;font-size:20px}p{margin:0;color:var(--mu)}
+input{width:100%;padding:14px;border:1px solid var(--ln);border-radius:12px;background:var(--card);color:var(--tx);font-size:16px}
+button{padding:14px;border:0;border-radius:12px;background:var(--ac);color:var(--at);font-size:16px;font-weight:600;cursor:pointer}
+button.s{background:var(--card);color:var(--tx);border:1px solid var(--ln)}
+.lnk{background:none;color:var(--mu);font-weight:400;text-decoration:underline}
+.top{display:flex;justify-content:space-between;align-items:center;padding:10px 16px}.top button{padding:8px 12px;font-size:14px}
+#mapw{flex:1;min-height:200px}#map{height:100%}
+.sheet{background:var(--card);border-radius:20px 20px 0 0;padding:16px;display:flex;flex-direction:column;gap:10px;box-shadow:0 -4px 20px #0002;z-index:1000;max-height:55vh;overflow:auto}
+.row{display:flex;gap:8px}.row>*{flex:1}
+.opt{border:2px solid var(--ln);background:var(--card);color:var(--tx)}.opt.on{border-color:var(--ac)}
+.big{font-size:26px;font-weight:700}.err{color:#d33;font-size:14px;min-height:18px}
+.hist div{padding:8px 0;border-bottom:1px solid var(--ln);display:flex;justify-content:space-between;font-size:14px}
+.stars button{background:none;font-size:28px;padding:4px;color:#f5a623}
+.car{font-size:26px}
+</style></head><body><div id="app"></div>
+<script>
+const $=s=>document.querySelector(s),A=$('#app'),mem={};
+const db={get(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return mem[k]??d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){mem[k]=v}}};
+// ===== TARIFAS (RD$) — ajústalas aquí =====
+const RATE={base:50,km:15,min:5,fee:20,minFare:80,traffic:1.25};
+const money=n=>'RD$ '+n.toLocaleString('es-DO');
+const fare=(km,min)=>Math.max(RATE.minFare,Math.round((RATE.base+RATE.km*km+RATE.min*min+RATE.fee)/5)*5);
+// ===== Backend simulado (reemplazar por tu servidor) =====
+const API={async hash(s){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));return[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')},
+ async register(n,e,p){const u=db.get('users',{});e=e.toLowerCase();if(u[e])throw'Ese correo ya está registrado';if(p.length<6)throw'Contraseña mínima: 6 caracteres';u[e]={name:n,pass:await this.hash(p)};db.set('users',u);db.set('session',e)},
+ async login(e,p){e=e.toLowerCase();const u=db.get('users',{})[e];if(!u||u.pass!==await this.hash(p))throw'Correo o contraseña incorrectos';db.set('session',e)},
+ user(){const e=db.get('session',null),u=e&&db.get('users',{})[e];return u?{email:e,name:u.name}:null},
+ logout(){db.set('session',null)},rides:e=>db.get('rides:'+e,[]),saveRide(e,r){const l=this.rides(e);l.unshift(r);db.set('rides:'+e,l.slice(0,30))},
+ drivers:[['Carlos M.','Toyota Corolla · A123456'],['Lucía R.','Hyundai Accent · A654321'],['Miguel A.','Kia Rio · A112233']]};
+// ===== Mapa real (OpenStreetMap + Leaflet), GPS, rutas (OSRM) =====
+let map,pm,dm,dst,rl,PICK=[18.4861,-69.9312],got=false;
+const hav=(a,b)=>{const r=Math.PI/180,x=(b[0]-a[0])*r,y=(b[1]-a[1])*r,h=Math.sin(x/2)**2+Math.cos(a[0]*r)*Math.cos(b[0]*r)*Math.sin(y/2)**2;return 12742*Math.asin(Math.sqrt(h))};
+async function osrm(a,b){try{const r=await fetch(`https://router.project-osrm.org/route/v1/driving/${a[1]},${a[0]};${b[1]},${b[0]}?overview=full&geometries=geojson`);const t=(await r.json()).routes[0];return{km:t.distance/1000,min:t.duration/60*RATE.traffic,pts:t.geometry.coordinates.map(c=>[c[1],c[0]])}}
+ catch(e){const km=hav(a,b)*1.35;return{km,min:km/25*60,pts:[a,b]}}}
+function initMap(){map=L.map('map',{zoomControl:false}).setView(PICK,15);
+ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+ pm=L.circleMarker(PICK,{radius:9,color:'#fff',weight:3,fillColor:'#0a8f4d',fillOpacity:1}).addTo(map);
+ map.on('click',e=>{if(st.step=='idle'||st.step=='confirm')setDest([e.latlng.lat,e.latlng.lng])});
+ if(navigator.geolocation)navigator.geolocation.watchPosition(p=>{PICK=[p.coords.latitude,p.coords.longitude];pm.setLatLng(PICK);if(!got){got=true;map.setView(PICK,16)}gps('📍 GPS activo')},()=>gps('⚠️ Activa el GPS y da permiso de ubicación'),{enableHighAccuracy:true,maximumAge:5000});
+ else gps('⚠️ Este dispositivo no tiene GPS');setTimeout(()=>map.invalidateSize(),200)}
+const gps=t=>{st.gps=t;const e=$('#gps');if(e)e.textContent=t};
+async function setDest(pt){st.dest=pt;st.info=null;st.step='confirm';sheet();dst&&map.removeLayer(dst);dst=L.marker(pt).addTo(map);
+ st.info=await osrm(PICK,pt);rl&&map.removeLayer(rl);rl=L.polyline(st.info.pts,{color:'#2b6cf0',weight:5}).addTo(map);map.fitBounds(rl.getBounds(),{padding:[40,40]});sheet()}
+async function search(){const q=$('#q').value.trim();if(!q)return;$('#er').textContent='Buscando…';
+ try{const r=await(await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=do&q='+encodeURIComponent(q))).json();
+  if(!r.length)return $('#er').textContent='No se encontró ese lugar';setDest([+r[0].lat,+r[0].lon])}catch(e){$('#er').textContent='Sin conexión. Toca el mapa para elegir destino.'}}
+function follow(pts,ms,cb){const t0=performance.now(),f=n=>{const t=Math.min((n-t0)/ms,1),x=t*(pts.length-1),i=Math.min(Math.floor(x),pts.length-2),k=x-i,a=pts[i],b=pts[i+1];dm.setLatLng([a[0]+(b[0]-a[0])*k,a[1]+(b[1]-a[1])*k]);if(t<1)requestAnimationFrame(f);else cb()};requestAnimationFrame(f)}
+// ===== UI =====
+let U=null,st={step:'idle',pay:'cash',card:null,gps:'📍 Buscando GPS…'};
+function auth(m){A.innerHTML=`<div class="auth"><h1>🚕 RutaYa</h1><p>${m=='in'?'Inicia sesión para pedir tu taxi':'Crea tu cuenta'}</p>${m=='up'?'<input id="n" placeholder="Nombre">':''}<input id="e" type="email" placeholder="Correo"><input id="p" type="password" placeholder="Contraseña"><div class="err" id="er"></div><button id="go">${m=='in'?'Entrar':'Registrarme'}</button><button class="lnk" id="sw">${m=='in'?'¿No tienes cuenta? Regístrate':'Ya tengo cuenta'}</button></div>`;
+ $('#sw').onclick=()=>auth(m=='in'?'up':'in');
+ $('#go').onclick=async()=>{try{const e=$('#e').value.trim(),p=$('#p').value;if(!e||!p)throw'Completa los campos';if(m=='up'){const n=$('#n').value.trim();if(!n)throw'Escribe tu nombre';await API.register(n,e,p)}else await API.login(e,p);U=API.user();home()}catch(x){$('#er').textContent=x}}}
+function home(){st={step:'idle',pay:st.pay,card:st.card,gps:st.gps};got=false;
+ A.innerHTML=`<div class="top"><b>🚕 RutaYa</b><span><button class="s" id="h">Historial</button> <button class="s" id="o">Salir</button></span></div><div id="mapw"><div id="map"></div></div><div class="sheet" id="sh"></div>`;
+ $('#o').onclick=()=>{API.logout();U=null;location.reload()};$('#h').onclick=hist;initMap();sheet()}
+function sheet(){const sh=$('#sh');if(!sh)return;const s=st.step;
+ if(s=='idle')sh.innerHTML=`<h2>Hola, ${U.name.split(' ')[0]} 👋</h2><p id="gps">${st.gps}</p><div class="row"><input id="q" placeholder="¿A dónde vas? (dirección o lugar)"><button id="sb" style="flex:0 0 auto">Buscar</button></div><div class="err" id="er"></div><p>O toca el mapa para marcar tu destino.</p>`;
+ if(s=='idle'){$('#sb').onclick=search;$('#q').onkeydown=e=>e.key=='Enter'&&search()}
+ if(s=='confirm'){if(!st.info){sh.innerHTML=`<h2>Calculando ruta…</h2>`;return}const i=st.info,f=fare(i.km,i.min);st.f=f;
+  sh.innerHTML=`<p>${i.km.toFixed(1)} km · ~${Math.max(2,Math.round(i.min))} min</p><div class="big">${money(f)}</div><p style="font-size:13px">Base ${RATE.base} + ${RATE.km}/km + ${RATE.min}/min + servicio ${RATE.fee} (mínimo ${RATE.minFare})</p>
+  <div class="row"><button class="opt ${st.pay=='cash'?'on':''}" id="pc">💵 Efectivo</button><button class="opt ${st.pay=='card'?'on':''}" id="pt">💳 ${st.card?'•••• '+st.card:'Tarjeta'}</button></div><div id="cf"></div><div class="err" id="er"></div><button id="rq">Pedir taxi</button><button class="s" id="cx">Cambiar destino</button>`;
+  $('#pc').onclick=()=>{st.pay='cash';sheet()};$('#pt').onclick=()=>{st.pay='card';sheet()};if(st.pay=='card'&&!st.card)cardForm();
+  $('#cx').onclick=()=>{dst&&map.removeLayer(dst);rl&&map.removeLayer(rl);st.step='idle';sheet()};
+  $('#rq').onclick=()=>{if(st.pay=='card'&&!st.card)return $('#er').textContent='Agrega una tarjeta válida';request()}}
+ if(s=='search')sh.innerHTML=`<h2>Buscando conductor…</h2><p>Contactando taxis cercanos.</p>`;
+ if(s=='arrive')sh.innerHTML=`<h2>${st.drv[0]} va en camino</h2><p>${st.drv[1]} · ⭐ 4.9</p><p>Pago: ${st.pay=='cash'?'efectivo':'tarjeta •••• '+st.card} · ${money(st.f)}</p>`;
+ if(s=='trip')sh.innerHTML=`<h2>En viaje 🚕</h2><p>Con ${st.drv[0]}</p>`;
+ if(s=='done'){sh.innerHTML=`<h2>¡Llegaste!</h2><div class="big">${money(st.f)}</div><p>${st.pay=='cash'?'Paga en efectivo al conductor.':'Se cobrará a tu tarjeta •••• '+st.card+' (requiere pasarela real).'}</p><div class="stars">${[1,2,3,4,5].map(i=>`<button data-i="${i}">${i<=(st.rate||0)?'★':'☆'}</button>`).join('')}</div><button id="fin">Listo</button>`;
+  sh.querySelectorAll('.stars button').forEach(b=>b.onclick=()=>{st.rate=+b.dataset.i;sheet()});$('#fin').onclick=()=>{API.saveRide(U.email,{d:new Date().toLocaleString('es-DO'),f:st.f,pay:st.pay,drv:st.drv[0],r:st.rate||0});location.reload()}}}
+function cardForm(){$('#cf').innerHTML=`<input id="cn" inputmode="numeric" placeholder="Número de tarjeta" maxlength="19"><div class="row" style="margin-top:8px"><input id="ce" placeholder="MM/AA" maxlength="5"><input id="cv" placeholder="CVV" maxlength="4" inputmode="numeric"></div><button class="s" id="cs" style="margin-top:8px">Guardar tarjeta</button>`;
+ $('#cn').oninput=e=>e.target.value=e.target.value.replace(/\D/g,'').replace(/(.{4})/g,'$1 ').trim();
+ $('#cs').onclick=()=>{const n=$('#cn').value.replace(/\s/g,''),e=$('#ce').value,v=$('#cv').value,ok=n.length>=13&&[...n].reverse().reduce((a,c,i)=>{let d=+c;if(i%2){d*=2;if(d>9)d-=9}return a+d},0)%10==0;
+  if(!ok)return $('#er').textContent='Número de tarjeta inválido';if(!/^(0[1-9]|1[0-2])\/\d\d$/.test(e))return $('#er').textContent='Fecha inválida (MM/AA)';if(!/^\d{3,4}$/.test(v))return $('#er').textContent='CVV inválido';st.card=n.slice(-4);sheet()}}
+async function request(){st.step='search';sheet();map.off('click');await new Promise(r=>setTimeout(r,2000));
+ st.drv=API.drivers[Math.floor(Math.random()*3)];const start=[PICK[0]+(Math.random()-.5)*.014,PICK[1]+(Math.random()-.5)*.014];
+ dm=L.marker(start,{icon:L.divIcon({className:'car',html:'🚕',iconSize:[30,30]})}).addTo(map);st.step='arrive';sheet();
+ const a=await osrm(start,PICK);follow(a.pts,Math.max(6000,a.min*1000),()=>{st.step='trip';sheet();follow(st.info.pts,Math.max(10000,st.info.min*1000),()=>{st.step='done';sheet()})})}
+function hist(){const l=API.rides(U.email),sh=$('#sh');sh.innerHTML=`<h2>Tus viajes</h2><div class="hist">${l.length?l.map(r=>`<div><span>${r.d}<br><small>${r.drv} · ${r.pay=='cash'?'Efectivo':'Tarjeta'} ${'★'.repeat(r.r)}</small></span><b>${money(r.f)}</b></div>`).join(''):'<p>Aún no tienes viajes.</p>'}</div><button class="s" id="bk">Volver</button>`;$('#bk').onclick=()=>{sheet()}}
+U=API.user();U?home():auth('in');
+</script></body></html>
